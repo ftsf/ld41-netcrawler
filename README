@@ -1,0 +1,80 @@
+LD41 Game
+
+Two incompatible themes
+
+Deckbuilding
+Tower Defence
+
+Hacking Theme
+
+Racks
+Servers
+Deques
+GC Pause
+
+Downtime
+
+You lose if you have too much downtime
+
+Win condition???
+
+
+
+You build a deck of maze+turret cards
+you can play cards from your hand onto the field (4x4? grid)
+
+you can play to an empty slot or slot with a card if there are
+no enemies on it
+
+turrets/defences take damage and become useless, maze continues
+until the card is replaced
+
+you can only draw at the end of a wave
+
+earn power by defeating enemies
+spend power to buy cards
+
+Card types:
+* Maze
+   main card type
+   section of maze, must line up with existing cards
+   may have turrets on it
+* Action
+   one off action, various
+* Upgrade
+   play in BASE ROW to give a passive buff
+   can be destroyed by enemies if they reach it
+   acts as a shield
+
+
+Enemies spawn at top and path through the maze towards the base row
+
+[    ENEMY    ]  [ 1 ] # supply queue
+[ ] [ ] [ ] [ ]  [ 2 ]
+[ ] [ ] [ ] [ ]  [ 3 ]
+[ ] [ ] [ ] [ ]  [ 4 ]
+[ ] [ ] [ ] [ ]  [ 5 ]
+[ ] [ ] [ ] [ ] < - BASE ROW
+
+[DECK] [DISCARD]
+
+[ HAND ]
+
+CARD IDEAS
+
+DONE * repair all turrets on a tile
+DONE * upgrade all turrets on a tile
+DONE * remove tile with packets
+DONE * trash top card of discard pile
+DONE * trash hand
+DONE * flush supply (not a card)
+DONE * slow all packets on a tile
+DONE * reactivate all dead turrets
+DONE * draw 3 cards
+DONE * draw 2 cards
+DONE * gain 1 money
+DONE * gain 2 money
+DONE * gain 3 money
+DONE * repair server
+DONE * take top discard into hand
+DONE * remove infection

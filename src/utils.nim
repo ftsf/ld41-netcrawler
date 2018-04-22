@@ -1,0 +1,43 @@
+import nico
+
+proc printShadowC*(text: string, x, y: cint, scale: cint = 1) =
+  let oldColor = getColor()
+  setColor(26)
+  printc(text, x-scale, y, scale)
+  printc(text, x+scale, y, scale)
+  printc(text, x, y-scale, scale)
+  printc(text, x, y+scale, scale)
+  printc(text, x+scale, y+scale, scale)
+  printc(text, x-scale, y-scale, scale)
+  printc(text, x+scale, y-scale, scale)
+  printc(text, x-scale, y+scale, scale)
+  setColor(oldColor)
+  printc(text, x, y, scale)
+
+proc printShadowR*(text: string, x, y: cint, scale: cint = 1) =
+  let oldColor = getColor()
+  setColor(26)
+  printr(text, x-scale, y, scale)
+  printr(text, x+scale, y, scale)
+  printr(text, x, y-scale, scale)
+  printr(text, x, y+scale, scale)
+  printr(text, x+scale, y+scale, scale)
+  printr(text, x-scale, y-scale, scale)
+  printr(text, x+scale, y-scale, scale)
+  printr(text, x-scale, y+scale, scale)
+  setColor(oldColor)
+  printr(text, x, y, scale)
+
+proc printShadow*(text: string, x, y: cint, scale: cint = 1) =
+  let oldColor = getColor()
+  setColor(26)
+  print(text, x-scale, y, scale)
+  print(text, x+scale, y, scale)
+  print(text, x, y-scale, scale)
+  print(text, x, y+scale, scale)
+  print(text, x+scale, y+scale, scale)
+  print(text, x-scale, y-scale, scale)
+  print(text, x+scale, y-scale, scale)
+  print(text, x-scale, y+scale, scale)
+  setColor(oldColor)
+  print(text, x, y, scale)

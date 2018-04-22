@@ -120,15 +120,16 @@ proc calcHeuristic[G: Tilemap, N: Tile, D: float32] (
     else:
         return D(graph.heuristic(next, goal))
 
+proc frontiercmp(a,b: FrontierElem[Tile, float32]): int =
+  return cmp(a.priority, b.priority)
+
 iterator path*(graph: Tilemap, start, goal: Tile): Tile =
     ## Executes the A-Star algorithm and iterates over the nodes that connect
     ## the start and goal
 
     # The frontier is the list of nodes we need to visit, sorted by a
     # combination of cost and how far we estimate them to be from the goal
-    var frontier =
-        newHeap[FrontierElem[Tile, float32]] do (a, b: FrontierElem[Tile, float32]) -> int:
-            return cmp(a.priority, b.priority)
+    var frontier = newHeap[FrontierElem[Tile, float32]](frontiercmp)
 
     # Put the start node into the frontier so we have a place to kick off
     frontier.push( (node: start, priority: float32(0), cost: float32(0)) )
