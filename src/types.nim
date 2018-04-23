@@ -57,6 +57,7 @@ type Boid* = ref object of Movable
   routeIndex*: int
 
 type Turret* = ref object of RootObj
+  level*: int
   pos*: Vec2i
   rechargeTimer*: float32
   rechargeTime*: float32
@@ -90,7 +91,7 @@ type ActionCard* = ref object of Card
   action*: proc(x,y: int): bool
   title*: string
   desc*: string
-  unblockable*: bool
+  playOnServer*: bool
 
 type Pile* = ref object
   pos*: Vec2f

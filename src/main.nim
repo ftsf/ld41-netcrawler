@@ -32,6 +32,9 @@ var nextId = 0
 
 var online: int
 
+var introMode: bool = true
+var logoY: float32 = -15.0
+var introTimeout: float32 = 5.0
 var shake: float32
 var shakeLevel: int
 var boids: seq[Boid]
@@ -62,6 +65,7 @@ var score: int
 var topScore: int
 var bestWaves: int
 var gameover: bool
+var gameoverTimeout: float32
 
 var tilemap: Tilemap
 
@@ -226,13 +230,10 @@ proc addNewGoodBoid(pos: Vec2f, goal: Server) =
     b.goal = goal
     boids.add(b)
 
-proc newTurret(pos: Vec2i, damage: int, radius: float32, rechargeTime: float32): Turret =
+proc newTurret(pos: Vec2i, level: int): Turret =
   result = new(Turret)
   result.pos = pos
-  result.rechargeTime = rechargeTime
-  result.rechargeTimer = result.rechargeTime
-  result.damage = damage
-  result.radius = radius
+  result.level = level
   result.health = 3
 
 proc newBullet(pos: Vec2i, vel: Vec2f, damage: int): Bullet =
@@ -309,7 +310,7 @@ proc nextWave() =
 
   for s in servers:
     if not s.infected:
-      if s.health < 10:
+      if s.health < 8:
         s.health += 1
 
   discardHand()
@@ -486,6 +487,22 @@ proc update(self: Boid, dt: float32) =
   pos = ipos.vec2f
 
 proc update(self: Turret, dt: float32) =
+  case level:
+  of 1:
+    radius = 16.0
+    rechargeTime = 1.0
+    damage = 1
+  of 2:
+    radius = 20.0
+    rechargeTime = 0.9
+    damage = 2
+  of 3:
+    radius = 36.0
+    rechargeTime = 0.75
+    damage = 3
+  else:
+    return
+
   if rechargeTimer > 0:
     rechargeTimer -= dt
 
@@ -525,7 +542,7 @@ method drawFace(self: TileCard, x,y: int) =
 method drawFace(self: ActionCard, x,y: int) =
   setColor(22)
   rectfill(x,y,x+cardWidth-1,y+cardHeight-1)
-  setColor(11)
+  setColor(if playOnField: 11 else: 12)
   rect(x,y,x+cardWidth-1,y+cardHeight-1)
   rectfill(x,y,x+cardWidth-1,y+8)
   setColor(26)
@@ -587,7 +604,7 @@ proc shuffle(self: Pile) =
 proc play(self: Pile, c: Card) =
   cards.addLast(c)
 
-proc draw(self: Pile, x,y: int, base: bool = true) =
+proc draw(self: Pile, x,y: int, base: bool = true, topLabel: string = nil, flash: bool = false) =
   pos = vec2f(x,y)
   setColor(16)
   if base:
@@ -603,6 +620,10 @@ proc draw(self: Pile, x,y: int, base: bool = true) =
   for c in cards:
     c.draw(x,yi)
     yi -= (if tight: 1 else: 2)
+
+  if topLabel != nil:
+    setColor(if flash and frame mod 30 < 15: 18 else: 28)
+    printc(topLabel, x + cardWidth div 2, yi + cardHeight div 2)
 
 proc drawCard(count: int = 1) =
   if drawPile.cards.len == 0:
@@ -624,6 +645,7 @@ proc gameInit() =
   loadMap("cards.json")
 
   gameover = false
+  gameoverTimeout = 2.0
 
   money = 0
 
@@ -642,8 +664,8 @@ proc gameInit() =
 
   for i in 0..3:
     var s = new(Server)
-    s.pos = vec2i(cardWidth*i + cardWidth div 2 + 8, cardHeight*4 + cardHeight div 2 + 16)
-    s.health = 10
+    s.pos = vec2i(cardWidth*i + cardWidth div 2 + 8, cardHeight*4 + cardHeight div 2)
+    s.health = 8
     s.infected = false
     servers.add(s)
 
@@ -701,7 +723,7 @@ proc gameInit() =
                 stillExists = true
                 break
             if not stillExists:
-              turrets.add(newTurret(vec2i(x*8+4,y*8+4), 1, 32.0, 2.0))
+              turrets.add(newTurret(vec2i(x*8+4,y*8+4), 1))
       return true
     initialDeck.cards.addLast(c)
 
@@ -709,14 +731,14 @@ proc gameInit() =
     var c = new(ActionCard)
     c.cost = 5
     c.title = "GC PAUSE"
-    c.desc = "PAUSE ALL PACKETS FOR 10 SECONDS"
+    c.desc = "PAUSE ALL PACKETS FOR 5 SECONDS"
     c.playOnField = false
     c.action = proc(col,row: int): bool =
-      maintenanceTime = 10
+      maintenanceTime = 5
       return true
     initialDeck.cards.addLast(c)
 
-  for i in 0..<2:
+  for i in 0..<1:
     var c = new(ActionCard)
     c.cost = 4
     c.title = "QOS.SLOW"
@@ -730,7 +752,7 @@ proc gameInit() =
       return true
     initialDeck.cards.addLast(c)
 
-  for i in 0..<3:
+  for i in 0..<2:
     var c = new(ActionCard)
     c.cost = 2
     c.title = "DRAW.2"
@@ -741,7 +763,7 @@ proc gameInit() =
       return true
     initialDeck.cards.addLast(c)
 
-  for i in 0..<5:
+  for i in 0..<3:
     var c = new(ActionCard)
     c.cost = 1
     c.title = "CREDIT++"
@@ -752,7 +774,7 @@ proc gameInit() =
       return true
     initialDeck.cards.addLast(c)
 
-  for i in 0..<3:
+  for i in 0..<2:
     var c = new(ActionCard)
     c.cost = 2
     c.title = "CREDIT+=2"
@@ -808,7 +830,7 @@ proc gameInit() =
       return true
     initialDeck.cards.addLast(c)
 
-  for i in 0..<3:
+  for i in 0..<2:
     var c = new(ActionCard)
     c.cost = 1
     c.title = "STK.TRASH"
@@ -827,7 +849,7 @@ proc gameInit() =
 
   for i in 0..<2:
     var c = new(ActionCard)
-    c.cost = 2
+    c.cost = 3
     c.title = "REPR.DEF"
     c.desc = "REPAIR DEFENCES ON A MODULE"
     c.playOnField = true
@@ -845,7 +867,7 @@ proc gameInit() =
       return hasTurrets
     initialDeck.cards.addLast(c)
 
-  for i in 0..<4:
+  for i in 0..<3:
     var c = new(ActionCard)
     c.cost = 2
     c.title = "UPGRD.DEF"
@@ -857,18 +879,17 @@ proc gameInit() =
       var hasTurrets = false
       for t in turrets:
         if t.pos.x >= start.x and t.pos.x < start.x + cardWidth and t.pos.y >= start.y and t.pos.y < start.y + cardHeight:
-          if t.damage < 3:
+          if t.level < 3:
             hasTurrets = true
-            t.damage += 1
+            t.level += 1
       if not hasTurrets:
         setLogMessage("NO UPGRADABLE DEFENCES ON MODULE")
       return hasTurrets
     initialDeck.cards.addLast(c)
 
-  for i in 0..<3:
+  for i in 0..<2:
     var c = new(ActionCard)
     c.cost = 2
-    c.unblockable = true
     c.title = "FORK.BOMB"
     c.desc = "TRASH MODULE W/ PACKETS"
     c.playOnField = true
@@ -901,6 +922,7 @@ proc gameInit() =
     c.title = "ANTI.VIR"
     c.desc = "REMOVE INFECTION FROM HOST"
     c.playOnField = true
+    c.playOnServer = true
     c.action = proc(col,row: int): bool =
       # remove infection from servers on rack
       let start = tilePos(col,row)
@@ -916,17 +938,20 @@ proc gameInit() =
                 let tmp = entrances.find(e)
                 if tmp > -1:
                   entrances.delete(tmp)
-          elif s.health < 10:
+          elif s.health < 8:
             hasInfection = true
             s.health += 5
-            if s.health > 10:
-              s.health = 10
+            if s.health > 8:
+              s.health = 8
       if not hasInfection:
         setLogMessage("HOST NOT INFECTED")
       return hasInfection
     initialDeck.cards.addLast(c)
 
   # shuffle the deck
+  initialDeck.shuffle()
+  initialDeck.shuffle()
+  initialDeck.shuffle()
   initialDeck.shuffle()
   initialDeck.shuffle()
   initialDeck.shuffle()
@@ -940,8 +965,9 @@ proc gameInit() =
   for x in 0..<4*5:
     if x mod 5 == 0 or x mod 5 == 4:
       continue
-    for y in 4*5..5*5+4:
+    for y in 4*5..<5*5-1:
       mset(x+1, y+1, 1)
+
   for x in 0..<mapWidth():
     if x mod 5 == 3:
       mset(x, 0, 6)
@@ -970,13 +996,16 @@ proc gameInit() =
       c.down = false
       supply[i] = c
 
-  discardHand()
+  #discardHand()
 
   # boids stuff
 
   boids = newSeq[Boid]()
 
 proc gameUpdate(dt: float32) =
+  if introTimeout > 0:
+    introTimeout -= dt
+
   if shake > 0:
     shake -= dt
   else:
@@ -986,8 +1015,12 @@ proc gameUpdate(dt: float32) =
     logMessageTimeout -= dt
 
   if gameover:
-    if mousebtnp(0):
-      gameInit()
+    if gameoverTimeout <= 0:
+      let (mx,my) = mouse()
+      if mousebtnp(0):
+        gameInit()
+    else:
+      gameoverTimeout -= dt
     return
 
   if wave > 0:
@@ -1019,13 +1052,14 @@ proc gameUpdate(dt: float32) =
     if not s.infected:
       s.reachable = false
       for e in entrances:
-        if e.myServer == nil:
-          # check if server is reachable from an entrance
-          for point in path(tilemap, getTile(e.pos), getTile(s.pos)):
-            s.reachable = true
-            e.connected = true
-            e.servers.add(s)
-            mset(point.x, point.y, 37)
+        e.servers = @[]
+        # check if server is reachable from an entrance
+        for point in path(tilemap, getTile(e.pos), getTile(s.pos)):
+          s.reachable = true
+          e.connected = true
+          e.servers.add(s)
+          mset(point.x, point.y, 37)
+          #mset(point.x, point.y+1, 37)
       if s.reachable:
         online += 1
 
@@ -1041,6 +1075,16 @@ proc gameUpdate(dt: float32) =
 
   if downtime > 10.0:
     gameover = true
+    gameoverTimeout = 2.0
+    topScore = try: getConfigValue("save","topScore").parseInt() except: 0
+    bestWaves = try: getConfigValue("save","topWaves").parseInt() except: 0
+    if score > topScore:
+      topScore = score
+      updateConfigValue("save","topScore", $topScore)
+    if wave - 1 > bestWaves:
+      bestWaves = wave - 1
+      updateConfigValue("save","bestWaves", $bestWaves)
+    saveConfig()
     return
 
   for e in entrances:
@@ -1049,6 +1093,7 @@ proc gameUpdate(dt: float32) =
   for s in servers:
     if not s.infected:
       mset(s.pos.x div 8, s.pos.y div 8, if s.reachable: 8 else: 9)
+      #mset(s.pos.x div 8, s.pos.y div 8 + 1, if s.reachable: 8 else: 9)
 
   # move boids
   if maintenanceTime > 0:
@@ -1140,8 +1185,9 @@ proc gameUpdate(dt: float32) =
     block:
       # hand
       if hand.len > 0:
-        let x = screenWidth div 2 - ((hand.len * cardWidth) div 2)
-        let y = screenHeight - cardHeight - 2
+        let hp = handPos()
+        let x = hp.x
+        let y = hp.y
         let w = (cardWidth + 1) * hand.len
         let h = cardHeight
         if mx >= x and mx <= x + w and my >= y and my <= y + h:
@@ -1168,16 +1214,20 @@ proc gameUpdate(dt: float32) =
                 setLogMessage("MUST USE EXE ON GRID")
             selectCard(nil)
     block:
-      # draw
+      # deck
       let x = 5
-      let y = screenHeight - 9 * 8
+      let y = screenHeight - 9 * 8 - drawPile.cards.len * 2
       let w = cardWidth
       let h = cardHeight + drawPile.cards.len * 2
       if mx >= x and mx <= x + w and my >= y and my <= y + h:
         if waveTimer < 20.0 and online > 0:
           nextWave()
+        elif wave == 0 and hand.len == 0 and online == 0:
+          introMode = false
+          discardHand()
+          return
         elif wave == 0 and online == 0:
-          setLogMessage("MUST CONNECT TO BEGIN")
+          setLogMessage("MUST CONNECT A HOST TO THE NET TO START")
           for i in 0..15:
             var c = field[i].draw()
             if c != nil:
@@ -1201,7 +1251,7 @@ proc gameUpdate(dt: float32) =
 
         let index = row * 4 + col
 
-        if selected != nil and index >= 0 and index < 16:
+        if selected != nil and index >= 0 and index < 16 + (if selected of ActionCard and ActionCard(selected).playOnServer: 4 else: 0):
           let i = hand.find(selected)
           if i > -1:
             if selected of ActionCard:
@@ -1253,10 +1303,13 @@ proc gameUpdate(dt: float32) =
                           break
 
                       if t == 49:
-                        turrets.add(newTurret(vec2i(tx*8+4,ty*8+4), 2, 16.0, 1.0))
+                        turrets.add(newTurret(vec2i(tx*8+4,ty*8+4), 2))
                         mset(tx, ty, 81)
                       elif t == 65:
-                        turrets.add(newTurret(vec2i(tx*8+4,ty*8+4), 1, 32.0, 2.0))
+                        turrets.add(newTurret(vec2i(tx*8+4,ty*8+4), 1))
+                        mset(tx, ty, 81)
+                      elif t == 83:
+                        turrets.add(newTurret(vec2i(tx*8+4,ty*8+4), 3))
                         mset(tx, ty, 81)
 
                 if oldCard != nil:
@@ -1275,7 +1328,7 @@ proc gameDraw() =
   setColor(26)
   rectfill(0,0,screenWidth,screenHeight)
 
-  drawPile.draw(5, screenHeight - 9 * 8)
+  drawPile.draw(5, screenHeight - 9 * 8, true, if waveTimer < 20: (if wave == 0: "BEGIN" else: "NEXT WAVE") else: nil, introMode and introTimeout <= 0)
   discardPile.draw(50, screenHeight - 9 * 8)
 
   block:
@@ -1312,15 +1365,17 @@ proc gameDraw() =
 
     for s in servers:
       if s.infected:
-        spr(10, s.pos.x - 4, s.pos.y - 4)
+        spr(136, s.pos.x - 4, s.pos.y - 4, 1, 2)
       else:
         if not s.reachable:
           pal(18,16)
-        spr(128 + (10 - s.health), s.pos.x - 4, s.pos.y - 4)
+        palt(26,false)
+        spr(128 + (8 - s.health), s.pos.x - 4, s.pos.y - 4, 1, 2)
+        palt(26,true)
         pal()
 
     for t in turrets:
-      case t.damage:
+      case t.level:
       of 1:
         spr(70, t.pos.x - 4, t.pos.y - 4)
       of 2:
@@ -1359,7 +1414,7 @@ proc gameDraw() =
     printr("1", xi + cardWidth-2, yi + 10)
 
   trashPile.draw(-cardWidth - 2, 20)
-  supplyDiscard.draw(-cardWidth - 2, screenHeight - cardHeight)
+  supplyDiscard.draw(-cardWidth - 2, screenHeight - cardHeight - 10)
 
   # hand
   if hand.len > 0:
@@ -1383,24 +1438,16 @@ proc gameDraw() =
     setColor(18)
     print("SCORE: " & $score, 5, 30)
 
-  if online > 0:
-    setColor(12)
-    print("ONLINE " & $online & "/4", 5, 5)
-  elif wave == 0:
-    setColor(18)
-    print("INSTALLATION PHASE", 5, 5)
-  else:
-    setColor(25)
-    print("OFFLINE: " & $(10 - downtime.int), 5, 5)
-
   if gameover:
     setColor(25)
-    printShadowC("GAME OVER!", screenWidth div 2, screenHeight div 2)
+    printShadowC("GAME OVER!", screenWidth div 2, screenHeight div 2 - 30)
     setColor(19)
-    printShadowC("WAVES SURVIVED: " & $(wave-1), screenWidth div 2, screenHeight div 2 + 20)
-    printShadowC("SCORE: " & $score, screenWidth div 2, screenHeight div 2 + 30)
-    setColor(if frame mod 60 < 30: 18 else: 19)
-    printShadowC("CLICK TO RESTART", screenWidth div 2, screenHeight div 2 + 60)
+    printShadowC("WAVES SURVIVED: " & $(wave-1), screenWidth div 2, screenHeight div 2 - 10)
+    printShadowC("SCORE: " & $score, screenWidth div 2, screenHeight div 2)
+    printShadowC("BEST SCORE: " & $topScore, screenWidth div 2, screenHeight div 2 + 10)
+    if gameoverTimeout <= 0:
+      setColor(if frame mod 60 < 30: 18 else: 19)
+      printShadowC("CLICK TO RESTART", screenWidth div 2, screenHeight div 2 + 50)
 
   else:
     if wave > 0 and online == 0 and downtime > 1.0:
@@ -1414,70 +1461,50 @@ proc gameDraw() =
 
     if wave > 0:
       setColor(18)
-      print("WAVE: " & $wave, 5, screenHeight - 20)
+      print("WAVE: " & $wave, 5, 10)
       if waveTimer < 3:
         if frame mod 10 < 5:
           setColor(25)
       elif waveTimer < 10:
         if frame mod 60 < 30:
           setColor(10)
-      print("NEXT WAVE IN " & $(waveTimer.int), 5, screenHeight - 10)
+      print("NEXT WAVE IN " & $(waveTimer.int), 5, 20)
+
+  if introTimeout < 1.0 and introMode:
+      printShadowC("CLICK ON YOUR DEQUE TO START", screenWidth div 2, screenHeight div 2 + 30)
 
   setColor(21)
   printc("THE NET", screenWidth div 2, 2)
-  printr("THE PIPE", screenWidth - 10, 2)
+  printr("CACHE", screenWidth - 10, 2)
   printc("CONSOLE", screenWidth div 2, screenHeight - 8)
   if logMessageTimeout > 0 and logMessage != nil:
     setColor(28)
-    print(logMessage, 5, screenHeight - 8)
+    print(logMessage, 5, screenHeight - 10)
 
-  if wave == 0:
+  if wave == 0 and bestWaves == 0:
     setColor(20)
-    var y = 30
+    var y = 5
     print("INSTRUCTIONS", 5, y)
     y += 12
     setColor(21)
-    print("HELLO, TECHNICIAN.", 5, y)
-    y += 7
-    print("YOU HAVE 4 RACKS EACH WITH A HOST", 5, y)
-    y += 7
-    print("CONNECT HOSTS TO THE NET TO ACCEPT", 5, y)
-    y += 7
-    print("PACKETS", 5, y)
-    y += 12
-    print("PLACE MODULES FROM THE CONSOLE ON RACKS", 5, y)
-    y += 7
-    print("MODULES HAVE BOTH LINKS AND DEFENCES", 5, y)
-    y += 7
-    print("DEFENCES DECAY OVER 3 WAVES", 5, y)
-    y += 10
-    print("BUY NEW MODULES FROM THE PIPE", 5, y)
-    y += 12
-    print("DEFEND YOUR HOSTS AGAINST WAVES", 5, y)
-    y += 7
-    print("OF ATTACKERS", 5, y)
-    y += 10
-    print("HOSTS HAVE FIREWALLS AND CAN STOP", 5, y)
-    y += 7
-    print("10 ATTACKERS BEFORE THEY ARE INFECTED", 5, y)
-    y += 12
-    print("IF YOU HAVE NO HOSTS REMAINING ONLINE", 5, y)
-    y += 7
-    print("YOU FAIL", 5, y)
-    y += 12
-    print("DRAW FROM DEQUE TO START THE WAVE", 5, y)
-    y += 7
-    print("ANY UNUSED MODULES WILL BE DISCARDED", 5, y)
-    y += 7
-    print("", 5, y)
+    richPrint("PLEASE READ BELOW BEFORE PLAYING", 5, y)
 
   debugDraw()
+
+  if introMode:
+    palt(26,true)
+    logoY = lerp(logoY, (screenHeight div 2 - 15 div 2).float32, 0.01)
+  else:
+    logoY = lerp(logoY, -30.0, 0.05)
+  sspr(0,97,96,15,screenWidth div 2 - 97 div 2, logoY)
 
   # mouse
   let (mx,my) = mouse()
 
 
 nico.init("impbox", "ld41")
+
+loadConfig()
 
 tileSize(8,8)
 
@@ -1488,5 +1515,5 @@ loadSpritesheet("spritesheet.png")
 
 fixedSize(true)
 integerScale(true)
-nico.createWindow("ld41", 1920 div 4 , 1080 div 4, 4)
+nico.createWindow("ld41", 1920 div 4 , 1080 div 4, 3)
 nico.run(gameInit, gameUpdate, gameDraw)
