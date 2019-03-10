@@ -1,5 +1,5 @@
 import deques
-import nico.vec
+import nico/vec
 
 type Hitbox* = tuple
   x,y,w,h: int
@@ -32,6 +32,13 @@ type Entrance* = ref object
   connected*: bool
   servers*: seq[Server]
   myServer*: Server
+  nRed*: int
+  nBlue* :int
+
+type BoidType* = enum
+  Basic
+  Tank
+  Speedy
 
 type Boid* = ref object of Movable
   id*: int
@@ -72,6 +79,14 @@ type Card* = ref object of RootObj
   cost*: int
   bought*: bool
   selected*: bool
+
+type CoinMove* = ref object
+  completed*: bool
+  pos*: Vec2f
+  dest*: Vec2f
+  time*: float32
+  alpha*: float32
+  onComplete*: proc()
 
 type CardMove* = ref object
   c*: Card

@@ -1,13 +1,9 @@
 import nico
-import nico.vec
-import nico.ui
-import nico.console
-import nico.util
+import nico/vec
+import nico/util
 import utils
-import tweaks
 import sets
 import hashes
-import queues
 import deques
 import sequtils
 import strutils
@@ -23,6 +19,7 @@ import types
 const cardWidth = 5 * 8
 const cardHeight = 5 * 8
 const maxBoids = 100
+const maxTurretHealth = 4
 
 # TYPES
 
@@ -32,6 +29,7 @@ var nextId = 0
 
 var online: int
 
+var nextWaveCooldown: float32
 var introMode: bool = true
 var logoY: float32 = -15.0
 var introTimeout: float32 = 5.0
@@ -47,15 +45,14 @@ var hand: seq[Card]
 var supply: array[5,Card]
 var money: int
 var incomeRate: int
-var downtime: float32
 var selected: Card
 var servers: seq[Server]
 var entrances: seq[Entrance]
 var turrets: seq[Turret]
 var bullets: seq[Bullet]
-var waveTimer: float32
 var wave: int
 var cardMoves: seq[CardMove]
+var coinMoves: seq[CoinMove]
 var frame: uint16 = 0
 var logMessage: string
 var logMessageTimeout: float32
@@ -66,6 +63,9 @@ var topScore: int
 var bestWaves: int
 var gameover: bool
 var gameoverTimeout: float32
+var nextWaveContents: seq[BoidType]
+var waveContents: Deque[BoidType]
+var nextSpawnTimeout: float32
 
 var tilemap: Tilemap
 
@@ -82,15 +82,31 @@ var serverNames = [
 
 # PROCS
 
+proc endGame() =
+    gameover = true
+    gameoverTimeout = 2.0
+    topScore = try: getConfigValue("save","topScore").parseInt() except: 0
+    bestWaves = try: getConfigValue("save","topWaves").parseInt() except: 0
+    if score > topScore:
+      topScore = score
+      updateConfigValue("save","topScore", $topScore)
+    if wave - 1 > bestWaves:
+      bestWaves = wave - 1
+      updateConfigValue("save","bestWaves", $bestWaves)
+    saveConfig()
+
 proc setLogMessage(text: string) =
   logMessage = text
   logMessageTimeout = 5.0
 
 proc shuffle(self: Pile)
-proc newPile(label: string = nil): Pile
+proc newPile(label: string = ""): Pile
 
 proc tilePos(col,row: int): Vec2i =
   return vec2i(8 + col * cardWidth, 8 + row * cardHeight)
+
+proc fieldPos(): Vec2i =
+  return vec2i(screenWidth div 2 - ((4 * cardWidth) div 2), 10)
 
 proc tileBlocked(col,row: int): bool =
   var blocked = false
@@ -115,6 +131,16 @@ proc selectCard(c: Card) =
   if selected != nil:
     selected.selected = false
   selected = c
+
+proc moveCoin(source: Vec2f, dest: Vec2f, onComplete: proc()) =
+  var cm = new(CoinMove)
+  cm.pos = source
+  cm.dest = dest
+  cm.onComplete = onComplete
+  cm.time = 0.2
+  cm.alpha = 0.0
+
+  coinMoves.add(cm)
 
 proc moveCard(c: Card, source: Vec2f, dest: Vec2f, onComplete: proc(cm: CardMove)) =
   if c == nil:
@@ -164,6 +190,19 @@ iterator neighbors(grid: Tilemap, node: Tile): Tile =
   if not isSolid(tx,ty+1):
     yield (tx,ty+1,mget(tx,ty+1))
 
+iterator neighborsAll(grid: Tilemap, node: Tile): Tile =
+  let tx = node.x
+  let ty = node.y
+
+  if tx > 0:
+    yield (tx-1,ty,mget(tx-1,ty))
+  if tx < mapWidth():
+    yield (tx+1,ty,mget(tx+1,ty))
+  if ty > 0:
+    yield (tx,ty-1,mget(tx,ty-1))
+  if ty < mapHeight():
+    yield (tx,ty+1,mget(tx,ty+1))
+
 include astar
 
 proc newBoid(pos: Vec2f): Boid =
@@ -180,16 +219,16 @@ proc newBoid(pos: Vec2f): Boid =
   result.ipos = pos.vec2i
   result.health = 2
   result.mass = 1.0
-  result.cohesion = 0.1
+  result.cohesion = 0.0
   result.cohesionRadius = 8.0
-  result.separation = 2.0
-  result.separationRadius = 4.0
+  result.separation = 1.0
+  result.separationRadius = 2.0
   result.maxForce = 50.0
   result.maxSpeed = 10.0
   result.alignment = 0.5
   result.shootTimeout = 5.0
   result.repathTimeout = 0.0
-  result.route = nil
+  result.route = @[]
   result.routeIndex = 0
 
 proc newGoodBoid(pos: Vec2f): Boid =
@@ -206,16 +245,16 @@ proc newGoodBoid(pos: Vec2f): Boid =
   result.ipos = pos.vec2i
   result.health = 2
   result.mass = 1.0
-  result.cohesion = 0.5
-  result.cohesionRadius = 8.0
-  result.separation = 5.0
-  result.separationRadius = 4.0
+  result.cohesion = 0.0
+  result.cohesionRadius = 1.0
+  result.separation = 1.0
+  result.separationRadius = 2.0
   result.maxForce = 50.0
   result.maxSpeed = 15.0
   result.alignment = 0.5
   result.shootTimeout = 5.0
   result.repathTimeout = 0.0
-  result.route = nil
+  result.route = @[]
   result.routeIndex = 0
 
 proc addNewBoid(pos: Vec2f, goal: Server) =
@@ -234,7 +273,7 @@ proc newTurret(pos: Vec2i, level: int): Turret =
   result = new(Turret)
   result.pos = pos
   result.level = level
-  result.health = 3
+  result.health = maxTurretHealth
 
 proc newBullet(pos: Vec2i, vel: Vec2f, damage: int): Bullet =
   result = new(Bullet)
@@ -288,37 +327,48 @@ proc flushSupply() =
     )()
 
 proc nextWave() =
+  if wave > 0 and online == 0:
+    endGame()
+    return
+
+  nextWaveCooldown = 10.0
   flushed = false
   wave += 1
-  var bandwidth = 0
-  for e in entrances:
-    if e.connected:
-      for i in 0..<5+rnd(wave):
-        addNewBoid(vec2f(e.pos.x+4+rnd(0.1), e.pos.y+10+rnd(0.1)), rnd(e.servers))
-
-  for e in entrances:
-    if e.connected and e.pos.y < 10:
-      for i in 0..<online*2:
-        addNewGoodBoid(vec2f(e.pos.x+4+rnd(0.1), e.pos.y+10+rnd(0.1)), rnd(e.servers))
-      bandwidth += 1
-  waveTimer = 30.0
 
   for t in turrets:
     t.health -= 1
 
   turrets.keepItIf(it.health > 0)
 
-  for s in servers:
-    if not s.infected:
-      if s.health < 8:
-        s.health += 1
+  var online = 0
+  var bandwidth = 0
+  if wave > 0:
+    for s in servers:
+      if not s.infected:
+        if s.health < 8 and s.reachable:
+          s.health += 1
+      else:
+        online += 1
+
+  for e in entrances:
+    if e.myServer == nil and e.connected:
+      bandwidth += 1
 
   discardHand()
 
-  money = min(money, online)
+  money = 0
 
   if wave > 1:
     score += online * bandwidth
+
+  for x in nextWaveContents:
+    waveContents.addLast(x)
+
+  nextWaveContents = @[]
+
+  let nRed = 5 + wave + rnd(wave)
+  for i in 0..<nRed:
+    nextWaveContents.add(Basic)
 
   selectCard(nil)
 
@@ -334,6 +384,12 @@ proc draw(self: Pile): Card =
     return nil
 
 
+
+proc hash(self: Tile): Hash =
+  var h: Hash = 0
+  h = h !& self.x
+  h = h !& self.y
+  result = !$h
 
 proc hash(self: Boid): Hash =
   var h: Hash = 0
@@ -406,7 +462,7 @@ proc update(self: Boid, dt: float32) =
     if goal.infected:
       goal = nil
 
-  if repathTimeout <= 0.0 or (route == nil and repathTimeout <= 0.0):
+  if repathTimeout <= 0.0 or (route.len == 0 and repathTimeout <= 0.0):
     if goal != nil:
       if goal.health <= 0 or goal.infected:
         goal = nil
@@ -421,7 +477,7 @@ proc update(self: Boid, dt: float32) =
         goal = nil
     repathTimeout = 5.0 + rnd(0.5)
 
-  elif route != nil:
+  elif route.len > 0:
 
     let ox = screenWidth div 2 - ((4 * cardWidth) div 2) + 8
     let oy = 10 + 8
@@ -434,7 +490,7 @@ proc update(self: Boid, dt: float32) =
       if pos.nearer(t, 8.0):
         routeIndex += 1
         if routeIndex == route.len:
-          route = nil
+          route = @[]
           routeIndex = 0
       else:
         seek(t, 1.0)
@@ -493,11 +549,11 @@ proc update(self: Turret, dt: float32) =
     rechargeTime = 1.0
     damage = 1
   of 2:
-    radius = 20.0
+    radius = 18.0
     rechargeTime = 0.9
     damage = 2
   of 3:
-    radius = 36.0
+    radius = 20.0
     rechargeTime = 0.75
     damage = 3
   else:
@@ -524,6 +580,10 @@ proc update(self: Turret, dt: float32) =
         # shoot
         bullets.add(newBullet(pos, (target.pos - pos.vec2f).normalized * 50.0, damage))
         rechargeTimer = rechargeTime
+
+proc play(self: Pile, c: Card) =
+  cards.addLast(c)
+
 
 method drawFace(self: Card, x,y: int) {.base.} =
   discard
@@ -555,6 +615,58 @@ method drawFace(self: ActionCard, x,y: int) =
     y += 7
 
 
+proc removeTile(col, row: int): Card =
+  # make the map solid here
+  for y in 0..4:
+    for x in 0..4:
+      mset(1+col*5+x, 1+row*5+y, 0)
+
+  let tp = tilePos(col,row)
+  turrets.keepItIf(it.pos.x < tp.x or it.pos.x > tp.x + cardWidth or it.pos.y < tp.y or it.pos.y > tp.y + cardHeight)
+
+  # remove the old card
+  let index = row * 4 + col
+  let oldCard = field[index].draw()
+  return oldCard
+
+proc placeTile(newCard: Card, col, row: int) =
+  let oldCard = removeTile(col, row)
+
+  let index = row * 4 + col
+
+  let after = proc() =
+    moveCard(newCard, newCard.pos, field[index].pos) do(cm: CardMove):
+      field[index].cards.addLast(cm.c)
+
+      # update the map
+      let tc = TileCard(cm.c)
+      for i,t in tc.data:
+        let tx = col * 5 + i mod 5 + 1
+        let ty = row * 5 + i div 5 + 1
+        mset(tx, ty, t)
+
+        if t == 49:
+          turrets.add(newTurret(vec2i(tx*8+4,ty*8+4), 2))
+          mset(tx, ty, 81)
+        elif t == 65:
+          turrets.add(newTurret(vec2i(tx*8+4,ty*8+4), 1))
+          mset(tx, ty, 81)
+        elif t == 83:
+          turrets.add(newTurret(vec2i(tx*8+4,ty*8+4), 3))
+          mset(tx, ty, 81)
+
+        if t == 102:
+          mset(tx, ty, 103)
+          moveCoin(vec2f(tx*8,ty*8) + fieldPos().vec2f, vec2f(screenWidth,0)) do:
+            money += 1
+
+  if oldCard != nil:
+    moveCard(oldCard, oldCard.pos, discardPile.pos) do(cm: CardMove):
+      discardPile.play(cm.c)
+      after()
+  else:
+    after()
+
 
 proc draw(self: Card, x,y: int) =
   pos = vec2f(x,y)
@@ -578,7 +690,7 @@ proc draw(self: Card, x,y: int) =
     setColor(19)
     rect(x-1,y-1,x+cardWidth,y+cardHeight)
 
-proc newPile(label: string = nil): Pile =
+proc newPile(label: string = ""): Pile =
   result = new(Pile)
   result.label = label
   result.cards = initDeque[Card]()
@@ -601,10 +713,7 @@ proc shuffle(self: Pile) =
     while stacks[i].len > 0:
       cards.addLast(stacks[i].popLast())
 
-proc play(self: Pile, c: Card) =
-  cards.addLast(c)
-
-proc draw(self: Pile, x,y: int, base: bool = true, topLabel: string = nil, flash: bool = false) =
+proc draw(self: Pile, x,y: int, base: bool = true, topLabel: string = "", flash: bool = false) =
   pos = vec2f(x,y)
   setColor(16)
   if base:
@@ -612,7 +721,7 @@ proc draw(self: Pile, x,y: int, base: bool = true, topLabel: string = nil, flash
   else:
     rect(x,y,x+cardWidth-1,y+cardHeight-1)
 
-  if label != nil:
+  if label != "":
     printc(label, x + cardWidth div 2, y + cardHeight + 2)
 
   let tight = cards.len > 10
@@ -621,8 +730,8 @@ proc draw(self: Pile, x,y: int, base: bool = true, topLabel: string = nil, flash
     c.draw(x,yi)
     yi -= (if tight: 1 else: 2)
 
-  if topLabel != nil:
-    setColor(if flash and frame mod 30 < 15: 18 else: 28)
+  if topLabel != "":
+    setColor(if flash and frame mod 30 < 15: 27 else: 28)
     printc(topLabel, x + cardWidth div 2, yi + cardHeight div 2)
 
 proc drawCard(count: int = 1) =
@@ -642,7 +751,8 @@ proc drawCard(count: int = 1) =
         drawCard(count - 1)
 
 proc gameInit() =
-  loadMap("cards.json")
+  loadMap(0, "cards.json")
+  setMap(0)
 
   gameover = false
   gameoverTimeout = 2.0
@@ -651,12 +761,10 @@ proc gameInit() =
 
   flushed = false
 
-  downtime = 0
-
   wave = 0
-  waveTimer = 0.0
 
   cardMoves = @[]
+  coinMoves = @[]
   turrets = @[]
   bullets = @[]
   entrances = @[]
@@ -763,18 +871,7 @@ proc gameInit() =
       return true
     initialDeck.cards.addLast(c)
 
-  for i in 0..<3:
-    var c = new(ActionCard)
-    c.cost = 1
-    c.title = "CREDIT++"
-    c.desc = "GET 1 CREDIT"
-    c.playOnField = false
-    c.action = proc(col,row: int): bool =
-      money+=1
-      return true
-    initialDeck.cards.addLast(c)
-
-  for i in 0..<2:
+  for i in 0..<5:
     var c = new(ActionCard)
     c.cost = 2
     c.title = "CREDIT+=2"
@@ -785,7 +882,7 @@ proc gameInit() =
       return true
     initialDeck.cards.addLast(c)
 
-  for i in 0..<2:
+  for i in 0..<4:
     var c = new(ActionCard)
     c.cost = 3
     c.title = "CREDIT+=3"
@@ -859,7 +956,7 @@ proc gameInit() =
       var hasTurrets = false
       for t in turrets:
         if t.pos.x >= start.x and t.pos.x < start.x + cardWidth and t.pos.y >= start.y and t.pos.y < start.y + cardHeight:
-          if t.health < 3:
+          if t.health < maxTurretHealth:
             t.health += 1
             hasTurrets = true
       if not hasTurrets:
@@ -938,6 +1035,7 @@ proc gameInit() =
                 let tmp = entrances.find(e)
                 if tmp > -1:
                   entrances.delete(tmp)
+                  break
           elif s.health < 8:
             hasInfection = true
             s.health += 5
@@ -961,7 +1059,7 @@ proc gameInit() =
   drawPile.shuffle()
   drawPile.shuffle()
 
-  newMap(4*5+2,5*5+2)
+  newMap(0, 4*5+2,5*5+2, 8, 8)
   for x in 0..<4*5:
     if x mod 5 == 0 or x mod 5 == 4:
       continue
@@ -1002,14 +1100,22 @@ proc gameInit() =
 
   boids = newSeq[Boid]()
 
+  waveContents = initDeque[BoidType]()
+  nextWaveContents = newSeq[BoidType]()
+  for i in 0..<5:
+    nextWaveContents.add(Basic)
+
 proc gameUpdate(dt: float32) =
+  if nextWaveCooldown > 0:
+    nextWaveCooldown -= dt
+
   if introTimeout > 0:
     introTimeout -= dt
 
   if shake > 0:
     shake -= dt
   else:
-    shakeLevel = 0
+    shakeLevel = 1
 
   if logMessageTimeout > 0:
     logMessageTimeout -= dt
@@ -1022,12 +1128,6 @@ proc gameUpdate(dt: float32) =
     else:
       gameoverTimeout -= dt
     return
-
-  if wave > 0:
-    waveTimer -= dt
-    if waveTimer < 0:
-      nextWave()
-
 
   for s in servers:
     if not s.infected and s.health <= 0:
@@ -1048,44 +1148,53 @@ proc gameUpdate(dt: float32) =
         mset(x,y,36)
 
   online = 0
-  for s in servers:
+  for si, s in servers:
     if not s.infected:
       s.reachable = false
-      for e in entrances:
-        e.servers = @[]
-        # check if server is reachable from an entrance
+      for ei, e in entrances:
         for point in path(tilemap, getTile(e.pos), getTile(s.pos)):
-          s.reachable = true
+          if e.myServer == nil:
+            s.reachable = true
           e.connected = true
           e.servers.add(s)
-          mset(point.x, point.y, 37)
-          #mset(point.x, point.y+1, 37)
+          break
       if s.reachable:
         online += 1
 
-  if online == 0 and wave > 0:
-    downtime += dt
-    if downtime > 1.0:
-      shake = 0.1
-      shakeLevel = 1
-  elif downtime > 0:
-    downtime -= dt * 0.1
-    if downtime < 0:
-      downtime = 0
+  var connectedEntrances = newSeq[Entrance]()
 
-  if downtime > 10.0:
-    gameover = true
-    gameoverTimeout = 2.0
-    topScore = try: getConfigValue("save","topScore").parseInt() except: 0
-    bestWaves = try: getConfigValue("save","topWaves").parseInt() except: 0
-    if score > topScore:
-      topScore = score
-      updateConfigValue("save","topScore", $topScore)
-    if wave - 1 > bestWaves:
-      bestWaves = wave - 1
-      updateConfigValue("save","bestWaves", $bestWaves)
-    saveConfig()
-    return
+  for ei, e in entrances:
+    if e.connected:
+
+      connectedEntrances.add(e)
+
+      var queue = initDeque[Tile]()
+      var seen = initSet[Tile]()
+      queue.addFirst(getTile(e.pos))
+
+      while queue.len > 0:
+        let current = queue.popLast()
+
+        mset(current.x, current.y, 37)
+
+        for n in neighborsAll(tilemap, current):
+          if not seen.contains(n):
+            seen.incl(n)
+
+            if not isSolid(n.t):
+              queue.addFirst(n)
+
+  if nextSpawnTimeout > 0:
+    nextSpawnTimeout -= dt
+  else:
+    if connectedEntrances.len > 0 and waveContents.len > 0:
+      let next = waveContents.popLast()
+      let e = rnd(connectedEntrances)
+      addNewBoid(vec2f(e.pos.x+4+rnd(0.1), e.pos.y+10+rnd(0.1)), rnd(e.servers))
+      nextSpawnTimeout = 0.5
+
+  if online == 0 and wave > 0 and hand.len == 0 and cardMoves.len == 0:
+    endGame()
 
   for e in entrances:
     mset(e.pos.x div 8, e.pos.y div 8, if e.connected: 6 else: 7)
@@ -1116,6 +1225,8 @@ proc gameUpdate(dt: float32) =
       if o.evil and o.pos.nearer(b.pos,2.0):
         b.ttl = 0
         o.health -= b.damage
+        if o.health <= 0:
+          score += 1
         break
 
   for i in 0..<cardMoves.len:
@@ -1126,6 +1237,15 @@ proc gameUpdate(dt: float32) =
       cm.completed = true
 
   cardMoves.keepItIf(not it.completed)
+
+  for i in 0..<coinMoves.len:
+    let cm = coinMoves[i]
+    cm.alpha += dt / cm.time
+    if cm.alpha >= 1.0:
+      cm.onComplete()
+      cm.completed = true
+
+  coinMoves.keepItIf(not it.completed)
 
   bullets.keepItIf(it.ttl > 0)
   boids.keepItIf(it.health > 0)
@@ -1206,10 +1326,10 @@ proc gameUpdate(dt: float32) =
                   moveCard(c, c.pos, discardPile.pos) do(cm: CardMove):
                     discardPile.play(cm.c)
                 else:
-                  shakeLevel = min(1,shakeLevel)
+                  shakeLevel = max(1,shakeLevel)
                   shake += 0.1
               else:
-                shakeLevel = min(1,shakeLevel)
+                shakeLevel = max(1,shakeLevel)
                 shake += 0.1
                 setLogMessage("MUST USE EXE ON GRID")
             selectCard(nil)
@@ -1220,34 +1340,39 @@ proc gameUpdate(dt: float32) =
       let w = cardWidth
       let h = cardHeight + drawPile.cards.len * 2
       if mx >= x and mx <= x + w and my >= y and my <= y + h:
-        if waveTimer < 20.0 and online > 0:
-          nextWave()
-        elif wave == 0 and hand.len == 0 and online == 0:
-          introMode = false
-          discardHand()
-          return
-        elif wave == 0 and online == 0:
-          setLogMessage("MUST CONNECT A HOST TO THE NET TO START")
-          for i in 0..15:
-            var c = field[i].draw()
-            if c != nil:
-              moveCard(c, c.pos, handPos().vec2f) do(cm: CardMove):
-                hand.add(cm.c)
-          for y in 1..<1+4*5:
-            for x in 1..<1+4*5:
-              mset(x,y,0)
-          turrets = @[]
+        if cardMoves.len == 0:
+          if wave > 0 and online == 0:
+            endGame()
+          elif online > 0 and nextWaveCooldown <= 0:
+            nextWave()
+          elif wave == 0 and hand.len == 0 and online == 0:
+            introMode = false
+            discardHand()
+            return
+          elif wave == 0 and online == 0:
+            setLogMessage("MUST CONNECT A HOST TO THE NET TO START")
+            for i in 0..15:
+              var c = field[i].draw()
+              if c != nil:
+                moveCard(c, c.pos, handPos().vec2f) do(cm: CardMove):
+                  hand.add(cm.c)
+            for y in 1..<1+4*5:
+              for x in 1..<1+4*5:
+                mset(x,y,0)
+            turrets = @[]
 
     block:
       # update field
-      var x = screenWidth div 2 - (((4 * cardWidth) + 8) div 2)
-      let y = 10 + 8
+      let fp = fieldPos()
+      let x = fp.x
+      let y = fp.y
+
       let w = cardWidth * 4 + 16
       let h = cardHeight * 4 + 16
 
       if mx >= x and mx <= x + w and my >= y and my <= y + h:
         let col = ((mx - 8) - x) div cardWidth
-        let row = (my - y) div cardHeight
+        let row = ((my - 8) - y) div cardHeight
 
         let index = row * 4 + col
 
@@ -1263,61 +1388,19 @@ proc gameUpdate(dt: float32) =
                     moveCard(cm.c, cm.c.pos, discardPile.pos) do(cm: CardMove):
                       discardPile.cards.addLast(cm.c)
                 else:
-                  shakeLevel = min(1, shakeLevel)
+                  shakeLevel = max(1, shakeLevel)
                   shake += 0.2
 
             elif selected of TileCard:
               # place tile card on field
-
-                if tileBlocked(col,row):
+              if tileBlocked(col,row):
                   shake += 0.2
                   shakeLevel = max(shakeLevel,1)
                   setLogMessage("MODULE BLOCKED BY ATTACKERS")
                   return
-
-                # make the map solid here
-                for y in 0..4:
-                  for x in 0..4:
-                    mset(1+col*5+x, 1+row*5+y, 0)
-
-                # remove the old card
-                let oldCard = field[index].draw()
-
-                let newCard = selected
-
+              else:
                 hand.delete(i)
-                let after = proc() =
-                  moveCard(newCard, newCard.pos, field[index].pos) do(cm: CardMove):
-                    field[index].cards.addLast(cm.c)
-
-                    # update the map
-                    let tc = TileCard(cm.c)
-                    for i,t in tc.data:
-                      let tx = col * 5 + i mod 5 + 1
-                      let ty = row * 5 + i div 5 + 1
-                      mset(tx, ty, t)
-                      # if turret at location, remove it first
-                      for i,t in turrets:
-                        if t.pos.x div 8 == tx and t.pos.y div 8 == ty:
-                          turrets.delete(i)
-                          break
-
-                      if t == 49:
-                        turrets.add(newTurret(vec2i(tx*8+4,ty*8+4), 2))
-                        mset(tx, ty, 81)
-                      elif t == 65:
-                        turrets.add(newTurret(vec2i(tx*8+4,ty*8+4), 1))
-                        mset(tx, ty, 81)
-                      elif t == 83:
-                        turrets.add(newTurret(vec2i(tx*8+4,ty*8+4), 3))
-                        mset(tx, ty, 81)
-
-                if oldCard != nil:
-                  moveCard(oldCard, oldCard.pos, discardPile.pos) do(cm: CardMove):
-                    discardPile.play(cm.c)
-                    after()
-                else:
-                  after()
+                placeTile(selected, col, row)
 
           selectCard(nil)
 
@@ -1328,19 +1411,21 @@ proc gameDraw() =
   setColor(26)
   rectfill(0,0,screenWidth,screenHeight)
 
-  drawPile.draw(5, screenHeight - 9 * 8, true, if waveTimer < 20: (if wave == 0: "BEGIN" else: "NEXT WAVE") else: nil, introMode and introTimeout <= 0)
+  drawPile.draw(5, screenHeight - 9 * 8, true, if nextWaveCooldown <= 0: (if wave == 0: "BEGIN" elif online == 0: "END GAME" else: "NEXT WAVE") else: "WAIT...", introMode and introTimeout <= 0)
   discardPile.draw(50, screenHeight - 9 * 8)
 
   block:
     # draw field
-    let x = screenWidth div 2 - ((4 * cardWidth) div 2)
-    let y = 10
+
+    let fp = fieldPos()
+    let x = fp.x
+    let y = fp.y
     let (mx,my) = mouse()
 
     let mcol = (mx - x - 8) div cardWidth
     let mrow = (my - y - 8) div cardHeight
 
-    setCamera(-x + (if shake > 0: rnd(shakeLevel*2)-shakeLevel else: 0), -y + (if shake > 0: rnd(shakeLevel*2)-shakeLevel else: 0))
+    setCamera(-x + (if shake > 0 and shakeLevel > 0: rnd(shakeLevel*2)-shakeLevel else: 0), -y + (if shake > 0: rnd(shakeLevel*2)-shakeLevel else: 0))
 
     for i in 0..<4*4:
       let row = i div 4
@@ -1374,6 +1459,12 @@ proc gameDraw() =
         palt(26,true)
         pal()
 
+    for e in entrances:
+      if e.connected:
+        setColor(25)
+        if e.myServer == nil:
+          setColor(18)
+
     for t in turrets:
       case t.level:
       of 1:
@@ -1386,8 +1477,8 @@ proc gameDraw() =
         spr(72, t.pos.x - 4, t.pos.y - 4)
 
       if t.health == 1 and frame mod 30 < 15:
-        pal(11,if waveTimer < 5: 25 else: 24)
-      spr(54 + 3 - t.health, t.pos.x - 3, t.pos.y)
+        pal(11,24)
+      spr(54 + maxTurretHealth - t.health, t.pos.x - 3, t.pos.y)
       pal()
 
     for b in bullets:
@@ -1429,14 +1520,20 @@ proc gameDraw() =
     let p = lerp(cm.c.pos, cm.dest, cm.alpha)
     cm.c.draw(p.x.int, p.y.int)
 
+  for i in 0..<coinMoves.len:
+    let cm = coinMoves[i]
+    cm.pos = lerp(cm.pos, cm.dest, cm.alpha)
+    spr(11, cm.pos.x, cm.pos.y)
+
   setColor(10)
-  if not gameover and (money > online and frame mod 30 < 15):
-    setColor(25)
-  print("CREDITS " & $money & "/" & $(online), screenWidth - cardWidth - 20, screenHeight - 10)
+  printr($money, screenWidth - cardWidth - 5, 10, 4)
 
   if wave > 0:
     setColor(18)
     print("SCORE: " & $score, 5, 30)
+
+  setColor(25)
+  print("NEXT WAVE: " & $nextWaveContents.len, 5, 40)
 
   if gameover:
     setColor(25)
@@ -1450,25 +1547,13 @@ proc gameDraw() =
       printShadowC("CLICK TO RESTART", screenWidth div 2, screenHeight div 2 + 50)
 
   else:
-    if wave > 0 and online == 0 and downtime > 1.0:
+    if wave > 0 and online == 0 and cardMoves.len == 0:
       setColor(25)
       printShadowC("SYSTEM OFFLINE!", screenWidth div 2, screenHeight div 2)
-      printShadowC($(10 - downtime.int), screenWidth div 2, screenHeight div 2 + 30)
-
-    if wave > 0 and waveTimer < 3:
-      setColor(28)
-      printShadowC("WAVE INCOMING : " & $(waveTimer.int), screenWidth div 2, screenHeight div 2 - 30)
 
     if wave > 0:
       setColor(18)
       print("WAVE: " & $wave, 5, 10)
-      if waveTimer < 3:
-        if frame mod 10 < 5:
-          setColor(25)
-      elif waveTimer < 10:
-        if frame mod 60 < 30:
-          setColor(10)
-      print("NEXT WAVE IN " & $(waveTimer.int), 5, 20)
 
   if introTimeout < 1.0 and introMode:
       printShadowC("CLICK ON YOUR DEQUE TO START", screenWidth div 2, screenHeight div 2 + 30)
@@ -1477,7 +1562,7 @@ proc gameDraw() =
   printc("THE NET", screenWidth div 2, 2)
   printr("CACHE", screenWidth - 10, 2)
   printc("CONSOLE", screenWidth div 2, screenHeight - 8)
-  if logMessageTimeout > 0 and logMessage != nil:
+  if logMessageTimeout > 0 and logMessage != "":
     setColor(28)
     print(logMessage, 5, screenHeight - 10)
 
@@ -1489,8 +1574,6 @@ proc gameDraw() =
     setColor(21)
     richPrint("PLEASE READ BELOW BEFORE PLAYING", 5, y)
 
-  debugDraw()
-
   if introMode:
     palt(26,true)
     logoY = lerp(logoY, (screenHeight div 2 - 15 div 2).float32, 0.01)
@@ -1500,20 +1583,26 @@ proc gameDraw() =
 
   # mouse
   let (mx,my) = mouse()
+  setColor(1)
+  circfill(mx, my, 2)
+  setColor(21)
+  circfill(mx, my, 1)
 
 
 nico.init("impbox", "ld41")
 
 loadConfig()
 
-tileSize(8,8)
-
 loadPaletteFromGPL("palette.gpl")
 palt(26,false)
 palt(0,true)
-loadSpritesheet("spritesheet.png")
+loadSpritesheet(0, "spritesheet.png", 8, 8)
+setSpritesheet(0)
 
-fixedSize(true)
-integerScale(true)
+loadFont(0, "font.png")
+setFont(0)
+
+#fixedSize(true)
+#integerScale(true)
 nico.createWindow("ld41", 1920 div 4 , 1080 div 4, 3)
 nico.run(gameInit, gameUpdate, gameDraw)

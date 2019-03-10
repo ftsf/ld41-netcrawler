@@ -1,6 +1,6 @@
-import nico.vec
+import nico/vec
 import nico
-import nico.util
+import nico/util
 import sequtils
 
 type DebugLine = tuple
